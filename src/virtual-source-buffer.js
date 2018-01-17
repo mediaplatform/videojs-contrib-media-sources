@@ -9,6 +9,149 @@ import work from 'webworkify';
 import transmuxWorker from './transmuxer-worker';
 import {isAudioCodec, isVideoCodec} from './codec-utils';
 
+// We create a wrapper around the SourceBuffer so that we can manage the
+// state of the `updating` property manually. We have to do this because
+// Firefox changes `updating` to false long before triggering `updateend`
+// events and that was causing strange problems in videojs-contrib-hls
+const makeWrappedSourceBuffer = function(mediaSource, mimeType) {
+  const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+  const wrapper = Object.create(null);
+
+  wrapper.updating = false;
+  wrapper.realBuffer_ = sourceBuffer;
+
+  for (let key in sourceBuffer) {
+    if (typeof sourceBuffer[key] === 'function') {
+      wrapper[key] = (...params) => sourceBuffer[key](...params);
+    } else if (typeof wrapper[key] === 'undefined') {
+      Object.defineProperty(wrapper, key, {
+        get: () => sourceBuffer[key],
+        set: (v) => sourceBuffer[key] = v
+      });
+    }
+  }
+
+  return wrapper;
+};
+
+/**
+ * Returns a list of gops in the buffer that have a pts value of 3 seconds or more in
+ * front of current time.
+ *
+ * @param {Array} buffer
+ *        The current buffer of gop information
+ * @param {Player} player
+ *        The player instance
+ * @param {Double} mapping
+ *        Offset to map display time to stream presentation time
+ * @return {Array}
+ *         List of gops considered safe to append over
+ */
+export const gopsSafeToAlignWith = (buffer, player, mapping) => {
+  if (!player || !buffer.length) {
+    return [];
+  }
+
+  // pts value for current time + 3 seconds to give a bit more wiggle room
+  const currentTimePts = Math.ceil((player.currentTime() - mapping + 3) * 90000);
+
+  let i;
+
+  for (i = 0; i < buffer.length; i++) {
+    if (buffer[i].pts > currentTimePts) {
+      break;
+    }
+  }
+
+  return buffer.slice(i);
+};
+
+/**
+ * Appends gop information (timing and byteLength) received by the transmuxer for the
+ * gops appended in the last call to appendBuffer
+ *
+ * @param {Array} buffer
+ *        The current buffer of gop information
+ * @param {Array} gops
+ *        List of new gop information
+ * @param {boolean} replace
+ *        If true, replace the buffer with the new gop information. If false, append the
+ *        new gop information to the buffer in the right location of time.
+ * @return {Array}
+ *         Updated list of gop information
+ */
+export const updateGopBuffer = (buffer, gops, replace) => {
+  if (!gops.length) {
+    return buffer;
+  }
+
+  if (replace) {
+    // If we are in safe append mode, then completely overwrite the gop buffer
+    // with the most recent appeneded data. This will make sure that when appending
+    // future segments, we only try to align with gops that are both ahead of current
+    // time and in the last segment appended.
+    return gops.slice();
+  }
+
+  const start = gops[0].pts;
+
+  let i = 0;
+
+  for (i; i < buffer.length; i++) {
+    if (buffer[i].pts >= start) {
+      break;
+    }
+  }
+
+  return buffer.slice(0, i).concat(gops);
+};
+
+/**
+ * Removes gop information in buffer that overlaps with provided start and end
+ *
+ * @param {Array} buffer
+ *        The current buffer of gop information
+ * @param {Double} start
+ *        position to start the remove at
+ * @param {Double} end
+ *        position to end the remove at
+ * @param {Double} mapping
+ *        Offset to map display time to stream presentation time
+ */
+export const removeGopBuffer = (buffer, start, end, mapping) => {
+  const startPts = Math.ceil((start - mapping) * 90000);
+  const endPts = Math.ceil((end - mapping) * 90000);
+  const updatedBuffer = buffer.slice();
+
+  let i = buffer.length;
+
+  while (i--) {
+    if (buffer[i].pts <= endPts) {
+      break;
+    }
+  }
+
+  if (i === -1) {
+    // no removal because end of remove range is before start of buffer
+    return updatedBuffer;
+  }
+
+  let j = i + 1;
+
+  while (j--) {
+    if (buffer[j].pts <= startPts) {
+      break;
+    }
+  }
+
+  // clamp remove range start to 0 index
+  j = Math.max(j, 0);
+
+  updatedBuffer.splice(j, i - j + 1);
+
+  return updatedBuffer;
+};
+
 /**
  * VirtualSourceBuffers exist so that we can transmux non native formats
  * into a native format, but keep the same api as a native source buffer.
@@ -28,15 +171,20 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
     this.timestampOffset_ = 0;
     this.pendingBuffers_ = [];
     this.bufferUpdating_ = false;
+
     this.mediaSource_ = mediaSource;
     this.codecs_ = codecs;
     this.audioCodec_ = null;
     this.videoCodec_ = null;
     this.audioDisabled_ = false;
     this.appendAudioInitSegment_ = true;
+    this.gopBuffer_ = [];
+    this.timeMapping_ = 0;
+    this.safeAppend_ = videojs.browser.IE_VERSION >= 11;
 
     let options = {
-      remux: false
+      remux: false,
+      alignGopsAtEnd: this.safeAppend_
     };
 
     this.codecs_.forEach((codec) => {
@@ -60,6 +208,10 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
       if (event.data.action === 'done') {
         return this.done_(event);
       }
+
+      if (event.data.action === 'gopInfo') {
+        return this.appendGopInfo_(event);
+      }
     };
 
     // this timestampOffset is a property with the side-effect of resetting
@@ -72,6 +224,10 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
         if (typeof val === 'number' && val >= 0) {
           this.timestampOffset_ = val;
           this.appendAudioInitSegment_ = true;
+
+          // reset gop buffer on timestampoffset as this signals a change in timeline
+          this.gopBuffer_.length = 0;
+          this.timeMapping_ = 0;
 
           // We have to tell the transmuxer to set the baseMediaDecodeTime to
           // the desired timestampOffset for the next segment
@@ -237,6 +393,12 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
    * @param {Event} event the done event from the transmuxer
    */
   done_(event) {
+    // Don't process and append data if the mediaSource is closed
+    if (this.mediaSource_.readyState === 'closed') {
+      this.pendingBuffers_.length = 0;
+      return;
+    }
+
     // All buffers should have been flushed from the muxer
     // start processing anything we have received
     this.processPendingSegments_();
@@ -272,10 +434,23 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
       // use that
       if (this.mediaSource_[`${type}Buffer_`]) {
         buffer = this.mediaSource_[`${type}Buffer_`];
+        // In multiple audio track cases, the audio source buffer is disabled
+        // on the main VirtualSourceBuffer by the HTMLMediaSource much earlier
+        // than createRealSourceBuffers_ is called to create the second
+        // VirtualSourceBuffer because that happens as a side-effect of
+        // videojs-contrib-hls starting the audioSegmentLoader. As a result,
+        // the audioBuffer is essentially "ownerless" and no one will toggle
+        // the `updating` state back to false once the `updateend` event is received
+        //
+        // Setting `updating` to false manually will work around this
+        // situation and allow work to continue
+        buffer.updating = false;
       } else {
-        buffer = this.mediaSource_.nativeMediaSource_.addSourceBuffer(
-          type + '/mp4;codecs="' + this[`${type}Codec_`] + '"'
-        );
+        const codecProperty = `${type}Codec_`;
+        const mimeType = `${type}/mp4;codecs="${this[codecProperty]}"`;
+
+        buffer = makeWrappedSourceBuffer(this.mediaSource_.nativeMediaSource_, mimeType);
+
         this.mediaSource_[`${type}Buffer_`] = buffer;
       }
 
@@ -287,6 +462,10 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
           // if audio is disabled
           if (type === 'audio' && this.audioDisabled_) {
             return;
+          }
+
+          if (event === 'updateend') {
+            this[`${type}Buffer_`].updating = false;
           }
 
           let shouldTrigger = types.every((t) => {
@@ -334,6 +513,15 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
       });
     }
 
+    if (this.videoBuffer_) {
+      this.transmuxer_.postMessage({
+        action: 'alignGopsWith',
+        gopsToAlignWith: gopsSafeToAlignWith(this.gopBuffer_,
+                                             this.mediaSource_.player_,
+                                             this.timeMapping_)
+      });
+    }
+
     this.transmuxer_.postMessage({
       action: 'push',
       // Send the typed-array of data as an ArrayBuffer so that
@@ -351,6 +539,21 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
   }
 
   /**
+   * Appends gop information (timing and byteLength) received by the transmuxer for the
+   * gops appended in the last call to appendBuffer
+   *
+   * @param {Event} event
+   *        The gopInfo event from the transmuxer
+   * @param {Array} event.data.gopInfo
+   *        List of gop info to append
+   */
+  appendGopInfo_(event) {
+    this.gopBuffer_ = updateGopBuffer(this.gopBuffer_,
+                                      event.data.gopInfo,
+                                      this.safeAppend_);
+  }
+
+  /**
    * Emulate the native mediasource function and remove parts
    * of the buffer from any of our internal buffers that exist
    *
@@ -360,9 +563,12 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
    */
   remove(start, end) {
     if (this.videoBuffer_) {
+      this.videoBuffer_.updating = true;
       this.videoBuffer_.remove(start, end);
+      this.gopBuffer_ = removeGopBuffer(this.gopBuffer_, start, end, this.timeMapping_);
     }
-    if (this.audioBuffer_) {
+    if (!this.audioDisabled_ && this.audioBuffer_) {
+      this.audioBuffer_.updating = true;
       this.audioBuffer_.remove(start, end);
     }
 
@@ -370,7 +576,11 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
     removeCuesFromTrack(start, end, this.metadataTrack_);
 
     // Remove Any Captions
-    removeCuesFromTrack(start, end, this.inbandTextTrack_);
+    if (this.inbandTextTracks_) {
+      for (let track in this.inbandTextTracks_) {
+        removeCuesFromTrack(start, end, this.inbandTextTracks_[track]);
+      }
+    }
   }
 
   /**
@@ -453,20 +663,34 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
       this.appendAudioInitSegment_ = false;
     }
 
+    let triggerUpdateend = false;
+
     // Merge multiple video and audio segments into one and append
-    if (this.videoBuffer_) {
+    if (this.videoBuffer_ && sortedSegments.video.bytes) {
       sortedSegments.video.segments.unshift(sortedSegments.video.initSegment);
       sortedSegments.video.bytes += sortedSegments.video.initSegment.byteLength;
       this.concatAndAppendSegments_(sortedSegments.video, this.videoBuffer_);
       // TODO: are video tracks the only ones with text tracks?
       addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
+    } else if (this.videoBuffer_ && (this.audioDisabled_ || !this.audioBuffer_)) {
+      // The transmuxer did not return any bytes of video, meaning it was all trimmed
+      // for gop alignment. Since we have a video buffer and audio is disabled, updateend
+      // will never be triggered by this source buffer, which will cause contrib-hls
+      // to be stuck forever waiting for updateend. If audio is not disabled, updateend
+      // will be triggered by the audio buffer, which will be sent upwards since the video
+      // buffer will not be in an updating state.
+      triggerUpdateend = true;
     }
+
     if (!this.audioDisabled_ && this.audioBuffer_) {
       this.concatAndAppendSegments_(sortedSegments.audio, this.audioBuffer_);
-      addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
     }
 
     this.pendingBuffers_.length = 0;
+
+    if (triggerUpdateend) {
+      this.trigger('updateend');
+    }
 
     // We are no longer in the internal "updating" state
     this.bufferUpdating_ = false;
@@ -494,6 +718,7 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
       });
 
       try {
+        destinationBuffer.updating = true;
         destinationBuffer.appendBuffer(tempBuffer);
       } catch (error) {
         if (this.mediaSource_.player_) {
@@ -518,7 +743,7 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
     if (this.videoBuffer_) {
       this.videoBuffer_.abort();
     }
-    if (this.audioBuffer_) {
+    if (!this.audioDisabled_ && this.audioBuffer_) {
       this.audioBuffer_.abort();
     }
     if (this.transmuxer_) {
