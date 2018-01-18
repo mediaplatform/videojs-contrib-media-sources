@@ -2643,6 +2643,7 @@ var VirtualSourceBuffer = (function (_videojs$EventTarget) {
 
       if (!this.audioDisabled_ && this.audioBuffer_) {
         this.concatAndAppendSegments_(sortedSegments.audio, this.audioBuffer_);
+        (0, _addTextTrackData.addTextTrackData)(this, sortedSegments.captions, sortedSegments.metadata);
       }
 
       this.pendingBuffers_.length = 0;
