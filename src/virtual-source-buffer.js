@@ -8,6 +8,7 @@ import {addTextTrackData} from './add-text-track-data';
 import work from 'webworkify';
 import transmuxWorker from './transmuxer-worker';
 import {isAudioCodec, isVideoCodec} from './codec-utils';
+import videojs from 'video.js';
 
 // We create a wrapper around the SourceBuffer so that we can manage the
 // state of the `updating` property manually. We have to do this because
