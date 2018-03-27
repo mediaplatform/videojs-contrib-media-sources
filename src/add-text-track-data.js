@@ -36,7 +36,8 @@ const deprecateOldCue = function(cue) {
         );
         return cue.value.data;
       }
-    }
+    },
+    configurable: true
   });
 };
 
@@ -56,7 +57,7 @@ const durationOfVideo = function(duration) {
  *
  * @param {Object} sourceHandler the flash or virtual source buffer
  * @param {Array} captionArray an array of caption data
- * @param {Array} metadataArray an array of meta data
+ * @param {Array} cue an array of meta data
  * @private
  */
 const addTextTrackData = function(sourceHandler, captionArray, metadataArray) {
@@ -64,9 +65,7 @@ const addTextTrackData = function(sourceHandler, captionArray, metadataArray) {
 
   if (captionArray) {
     captionArray.forEach(function(caption) {
-      let track = caption.stream;
-
-      this.inbandTextTracks_[track].addCue(
+      this.inbandTextTrack_.addCue(
         new Cue(
           caption.startTime + this.timestampOffset,
           caption.endTime + this.timestampOffset,
