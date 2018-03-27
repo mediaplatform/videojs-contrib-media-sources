@@ -684,7 +684,13 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
 
     if (!this.audioDisabled_ && this.audioBuffer_) {
       this.concatAndAppendSegments_(sortedSegments.audio, this.audioBuffer_);
-      addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
+      try {
+        addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
+      }
+      catch(error)
+      {
+        videojs.log.warn(error);
+      }
     }
 
     this.pendingBuffers_.length = 0;

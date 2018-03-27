@@ -45,9 +45,6 @@ var deprecateOldCue = function deprecateOldCue(cue) {
         return cue.value.data;
       }
     }
-  },
-  {
-    configurable: true
   });
 };
 

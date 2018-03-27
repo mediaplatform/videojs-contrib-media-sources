@@ -735,7 +735,13 @@ var VirtualSourceBuffer = (function (_videojs$EventTarget) {
 
       if (!this.audioDisabled_ && this.audioBuffer_) {
         this.concatAndAppendSegments_(sortedSegments.audio, this.audioBuffer_);
-        (0, _addTextTrackData.addTextTrackData)(this, sortedSegments.captions, sortedSegments.metadata);
+        try {
+          (0, _addTextTrackData.addTextTrackData)(this, sortedSegments.captions, sortedSegments.metadata);
+        }
+        catch(error)
+        {
+          videojs.log.warn(error);
+        }
       }
 
       this.pendingBuffers_.length = 0;
