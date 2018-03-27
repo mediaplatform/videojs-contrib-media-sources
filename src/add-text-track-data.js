@@ -36,7 +36,9 @@ const deprecateOldCue = function(cue) {
         );
         return cue.value.data;
       }
-    },
+    }
+  },
+  {
     configurable: true
   });
 };

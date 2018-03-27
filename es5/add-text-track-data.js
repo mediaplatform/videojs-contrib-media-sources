@@ -44,7 +44,9 @@ var deprecateOldCue = function deprecateOldCue(cue) {
         _videoJs2['default'].log.warn('cue.frame.privateData is deprecated. Use cue.value.data instead.');
         return cue.value.data;
       }
-    },
+    }
+  },
+  {
     configurable: true
   });
 };
