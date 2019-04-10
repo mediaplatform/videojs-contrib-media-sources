@@ -671,7 +671,7 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
       sortedSegments.video.bytes += sortedSegments.video.initSegment.byteLength;
       this.concatAndAppendSegments_(sortedSegments.video, this.videoBuffer_);
       // TODO: are video tracks the only ones with text tracks?
-      addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
+//      addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
     } else if (this.videoBuffer_ && (this.audioDisabled_ || !this.audioBuffer_)) {
       // The transmuxer did not return any bytes of video, meaning it was all trimmed
       // for gop alignment. Since we have a video buffer and audio is disabled, updateend
@@ -684,14 +684,16 @@ export default class VirtualSourceBuffer extends videojs.EventTarget {
 
     if (!this.audioDisabled_ && this.audioBuffer_) {
       this.concatAndAppendSegments_(sortedSegments.audio, this.audioBuffer_);
-      try {
-        addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
-      }
-      catch(error)
-      {
-        videojs.log.warn(error);
-      }
+      // try {
+      //   addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
+      // }
+      // catch(error)
+      // {
+      //   videojs.log.warn(error);
+      // }
     }
+
+    addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
 
     this.pendingBuffers_.length = 0;
 
