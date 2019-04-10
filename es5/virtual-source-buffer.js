@@ -722,25 +722,29 @@ var VirtualSourceBuffer = (function (_videojs$EventTarget) {
         sortedSegments.video.bytes += sortedSegments.video.initSegment.byteLength;
         this.concatAndAppendSegments_(sortedSegments.video, this.videoBuffer_);
         // TODO: are video tracks the only ones with text tracks?
-        (0, _addTextTrackData.addTextTrackData)(this, sortedSegments.captions, sortedSegments.metadata);
+        //      addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
       } else if (this.videoBuffer_ && (this.audioDisabled_ || !this.audioBuffer_)) {
-        // The transmuxer did not return any bytes of video, meaning it was all trimmed
-        // for gop alignment. Since we have a video buffer and audio is disabled, updateend
-        // will never be triggered by this source buffer, which will cause contrib-hls
-        // to be stuck forever waiting for updateend. If audio is not disabled, updateend
-        // will be triggered by the audio buffer, which will be sent upwards since the video
-        // buffer will not be in an updating state.
-        triggerUpdateend = true;
-      }
+          // The transmuxer did not return any bytes of video, meaning it was all trimmed
+          // for gop alignment. Since we have a video buffer and audio is disabled, updateend
+          // will never be triggered by this source buffer, which will cause contrib-hls
+          // to be stuck forever waiting for updateend. If audio is not disabled, updateend
+          // will be triggered by the audio buffer, which will be sent upwards since the video
+          // buffer will not be in an updating state.
+          triggerUpdateend = true;
+        }
 
       if (!this.audioDisabled_ && this.audioBuffer_) {
         this.concatAndAppendSegments_(sortedSegments.audio, this.audioBuffer_);
-        try {
-          (0, _addTextTrackData.addTextTrackData)(this, sortedSegments.captions, sortedSegments.metadata);
-        } catch (error) {
-          _videoJs2['default'].log.warn(error);
-        }
+        // try {
+        //   addTextTrackData(this, sortedSegments.captions, sortedSegments.metadata);
+        // }
+        // catch(error)
+        // {
+        //   videojs.log.warn(error);
+        // }
       }
+
+      (0, _addTextTrackData.addTextTrackData)(this, sortedSegments.captions, sortedSegments.metadata);
 
       this.pendingBuffers_.length = 0;
 
