@@ -89,7 +89,7 @@ var addTextTrackData = function addTextTrackData(sourceHandler, captionArray, me
           cue.frame = frame;
           cue.value = frame;
           deprecateOldCue(cue);
-
+          trace("adding metadata frame: " + frame.data);
           this.metadataTrack_.addCue(cue);
         }, this);
       }, sourceHandler);
