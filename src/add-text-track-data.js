@@ -88,7 +88,8 @@ const addTextTrackData = function(sourceHandler, captionArray, metadataArray) {
         cue.frame = frame;
         cue.value = frame;
         deprecateOldCue(cue);
-        console.log("adding metadata frame: " + frame.data);
+        console.log("adding cue: " + frame.data + " time: " + time);
+        //console.log('adding cue: ' + eventObj.startTime + ' endTime: ' + eventObj.endTime + ' data: ' + frame.data);
         this.metadataTrack_.addCue(cue);
       }, this);
     }, sourceHandler);
